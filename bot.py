@@ -7,12 +7,12 @@ import asyncio
 from datetime import datetime, timedelta
 
 # Настройки
-ADMIN_CHAT_ID = -783911087 # ID чата для репортов
+ADMIN_CHAT_ID = -1002323280754 # ID чата для репортов
+BOT_TOKEN= "7943989049:AAHjmtOWN3ayL1bLXj5d5-MVL_0CpIdTBqs"
 MAX_WARNS = 5                   # Макс. кол-во предупреждений
 BAN_DURATION = timedelta(hours=1) # Длительность бана
 
 # Инициализация
-bot = Bot(token="943989049:AAHjmtOWN3ayL1bLXj5d5-MVL_0CpIdTBqs")
 dp = Dispatcher()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -21,25 +21,44 @@ logger = logging.getLogger(__name__)
 users_db = {}  # {user_id: {"warns": 0}}
 reports_db = []  # Список репортов
 
+# Загрузка токена
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+
+if not TOKEN:
+    logger.error("Токен не найден! Создайте файл .env с BOT_TOKEN")
+    exit(1)
+
+async def main():
+    try:
+        bot = Bot(token=TOKEN)
+        dp = Dispatcher()
+        
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Бот запущен успешно!")
+        await dp.start_polling(bot)
+        
+    except Exception as e:
+        logger.error(f"Ошибка запуска: {e}")
+    finally:
+        await bot.session.close()
+
 # ========== КОМАНДЫ ========== #
 
 @dp.message(Command("start", "help"))
 async def cmd_help(message: types.Message):
-    """Список всех команд"""
-    help_text = """
-<b>📜 Доступные команды:</b>
+    """главное меню"""
+    await message.answer(
 
-<u>Для всех:</u>
-• /help - Справка по командам
-• /call - Призвать всех участников
-• /report - Пожаловаться на пользователя
+        "🦉 <b>Owl Bot - Помощник модерации</b>\n\n"
+        "Доступные команды:\n"
+        "/call - Призвать участников\n"
+        "/report - Пожаловаться\n"
+        "/help - Это меню",
 
-<u>Для модераторов:</u>
-• /warn - Выдать предупреждение
-• /ban - Забанить пользователя
-• /mod - Меню модератора
-"""
-    await message.answer(help_text, parse_mode="HTML")
+        parse_mode="HTML"
+    )
+    
 
 # ========== СИСТЕМА ПРИЗЫВОВ ========== #
 
@@ -48,7 +67,7 @@ async def call_members(message: types.Message):
     """Призыв всех участников чата"""
     try:
         members = []
-        async for member in bot.get_chat_members(message.chat.id):
+        async for member in BOT_TOKEN.get_chat_members(message.chat.id):
             if not member.user.is_bot:
                 members.append(member.user.mention_html())
         
@@ -80,7 +99,6 @@ async def report_user(message: types.Message):
         f"• На: {reported_user.mention_html()}\n"
         f"• ID: <code>{reported_user.id}</code>\n"
         f"• От: {reporter.mention_html()}\n"
-        f"• Чат: <code>{message.chat.title}</code>\n"
         f"• Причина: {reason}\n"
         f"• Время: {datetime.now().strftime('%H:%M %d.%m.%Y')}"
     )
@@ -97,7 +115,7 @@ async def report_user(message: types.Message):
     ])
     
     try:
-        await bot.send_message(
+        await BOT_TOKEN.send_message(
             chat_id=ADMIN_CHAT_ID,
             text=report_text,
             reply_markup=kb,
@@ -130,7 +148,7 @@ async def warn_user(callback: types.CallbackQuery):
     
     if warn_count >= MAX_WARNS:
         try:
-            await bot.ban_chat_member(
+            await BOT_TOKEN.ban_chat_member(
                 chat_id=callback.message.chat.id,
                 user_id=user_id,
                 until_date=datetime.now() + BAN_DURATION
@@ -157,8 +175,29 @@ cursor.execute('''CREATE TABLE IF NOT EXISTS warns
 # ========== ЗАПУСК БОТА ========== #
 
 async def main():
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+    await BOT_TOKEN.delete_webhook(drop_pending_updates=True)
+    await dp.start_polling(BOT_TOKEN)
+
+import os
+from dotenv import load_dotenv
+from aiogram import Bot, Dispatcher
+import asyncio
+import logging
+
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+
+from aiogram import BaseMiddleware
+
+class LoggingMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        logger.info(f"Обработка {event.__class__.__name__}")
+        return await handler(event, data)
+
+dp.update.middleware(LoggingMiddleware())
 
 if __name__ == "__main__":
     asyncio.run(main())
