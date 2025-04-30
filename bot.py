@@ -1,21 +1,28 @@
 import logging
 import sqlite3
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import Message, ChatPermissions
-from aiogram.enums import ParseMode
+from aiogram import Bot, Dispatcher, types, F 
+from aiogram.filters import Command 
+from aiogram.types import Message, ChatPermissions 
+from aiogram.enums import ParseMode 
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv 
 from datetime import datetime, timedelta
+
+
 
 # Настройка логгирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Загрузка переменных окружения
-load_dotenv()
+load_dotenv(r'C:\Users\Genko\botic\.env')
 BOT_TOKEN = os.getenv("7943989049:AAHjmtOWN3ayL1bLXj5d5-MVL_0CpIdTBqs")
 REPORT_CHAT_ID = os.getenv("-1002323280754")  # ID чата для репортов
+
+import os
+print("Текущая директория:", os.getcwd())  # Где ищется .env
+print("Содержимое папки:", os.listdir())   # Виден ли .env
+
 
 if not BOT_TOKEN:
     raise ValueError("Токен бота не найден! Проверьте .env файл.")
@@ -288,6 +295,7 @@ async def show_rules(message: Message):
     
     await message.reply(f"📜 Правила чата:\n\n{rules_text}")
 
+
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ========== #
 
 async def check_admin(message: Message) -> bool:
@@ -302,7 +310,9 @@ async def check_admin(message: Message) -> bool:
     except Exception as e:
         logger.error(f"Ошибка проверки админки: {e}")
         return False
+    
+
 
 if __name__ == '__main__':
-    from aiogram import executor
+    from aiogram import executor 
     executor.start_polling(dp, skip_updates=True)
