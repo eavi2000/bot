@@ -1,318 +1,246 @@
 import logging
 import sqlite3
-from aiogram import Bot, Dispatcher, types, F 
-from aiogram.filters import Command 
-from aiogram.types import Message, ChatPermissions 
-from aiogram.enums import ParseMode 
+import asyncio
 import os
-from dotenv import load_dotenv 
+from pathlib import Path
+from dotenv import load_dotenv
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.types import Message,InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.filters import Command
+from aiogram.enums import ParseMode
+from aiogram.client.default import DefaultBotProperties
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from datetime import datetime, timedelta
 
 
+# Настройки
+MAX_WARNS = 3                   # Макс. кол-во предупреждений
+BAN_DURATION = timedelta(hours=1) # Длительность бана
 
-# Настройка логгирования
-logging.basicConfig(level=logging.INFO)
+# Настройка логгера
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
-
-# Загрузка переменных окружения
-load_dotenv(r'C:\Users\Genko\botic\.env')
-BOT_TOKEN = os.getenv("7943989049:AAHjmtOWN3ayL1bLXj5d5-MVL_0CpIdTBqs")
-REPORT_CHAT_ID = os.getenv("-1002323280754")  # ID чата для репортов
-
-import os
-print("Текущая директория:", os.getcwd())  # Где ищется .env
-print("Содержимое папки:", os.listdir())   # Виден ли .env
-
-
-if not BOT_TOKEN:
-    raise ValueError("Токен бота не найден! Проверьте .env файл.")
-
-# Инициализация бота
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher()
 
 # Инициализация базы данных
 def init_db():
     with sqlite3.connect('bot_db.db') as conn:
         cursor = conn.cursor()
-        
-        # Таблица с настройками чатов
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS chats (
-            chat_id INTEGER PRIMARY KEY,
-            welcome_text TEXT DEFAULT 'Добро пожаловать, {name}!',
-            rules_text TEXT DEFAULT 'Правила не установлены',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
+            CREATE TABLE IF NOT EXISTS chats (
+                chat_id INTEGER PRIMARY KEY,
+                welcome_text TEXT DEFAULT 'Добро пожаловать, {name}!'
+            )
         """)
-        
-        # Таблица с варнами
         cursor.execute("""
-        CREATE TABLE IF NOT EXISTS warns (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER,
-            user_id INTEGER,
-            admin_id INTEGER,
-            reason TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
-        )
+            CREATE TABLE IF NOT EXISTS warns (
+                user_id INTEGER,
+                chat_id INTEGER,
+                count INTEGER DEFAULT 0,
+                PRIMARY KEY (user_id, chat_id)
+            )
         """)
-        
         conn.commit()
 
 init_db()
 
-# ========== КОМАНДЫ БОТА ========== #
 
-# Команда /start
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    await message.answer(
-        "👋 Привет! Я сова для управления чатами.\n"
-        "📌 Добавьте меня в группу и дайте права администратора для полного функционала.\n"
-        "ℹ️ Список команд: /help"
-    )
 
-# Команда /help
-@dp.message(Command("help"))
-async def cmd_help(message: Message):
-    help_text = """
-<b>📋 Основные команды:</b>
+# 2. Загрузка конфигурации
+BASE_DIR = Path(__file__).parent
+ENV_PATH = BASE_DIR / '.env'
+load_dotenv(ENV_PATH)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
-<u>Для всех:</u>
-/start - Начало работы
-/help - Справка по командам
-/rules - Правила чата
-/report [причина] - Пожаловаться на пользователя (ответом на сообщение)
-/warns - Посмотреть свои предупреждения
+if not BOT_TOKEN:
+    raise ValueError("Токен бота не найден в .env файле")
 
-<u>Для админов:</u>
-/set_welcome [текст] - Установить приветствие
-/set_rules [текст] - Установить правила
-/warn [причина] - Выдать предупреждение (ответом на сообщение)
-/unwarn - Снять предупреждение
-/call_all - Созвать всех участников
-/call [@username] - Созвать конкретного пользователя
-"""
-    await message.answer(help_text)
-
-# ========== ФУНКЦИИ ПРИВЕТСТВИЯ ========== #
-
-@dp.message(F.new_chat_members)
-async def welcome_new_members(message: Message):
-    chat_id = message.chat.id
-    for new_member in message.new_chat_members:
-        if new_member.id == bot.id:
-            await message.answer("Спасибо за добавление! Дайте мне.")
-            continue
-        
-        # Получаем текст приветствия из БД
-        with sqlite3.connect('bot_db.db') as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT welcome_text FROM chats WHERE chat_id = ?", (chat_id,))
-            result = cursor.fetchone()
-            welcome_text = result[0] if result else 'Добро пожаловать, {name}!'
-        
-        welcome_msg = welcome_text.format(
-            name=new_member.full_name,
-            chat=message.chat.title
-        )
-        await message.answer(welcome_msg)
-
-# ========== ФУНКЦИИ РЕПОРТОВ ========== #
-
-@dp.message(Command("report"))
-@dp.message(F.reply_to_message, Command("report"))
-async def report_user(message: Message):
-    if not message.reply_to_message:
-        await message.reply("ℹ️ Используйте команду /report в ответ на сообщение пользователя, на которого хотите пожаловаться.")
-        return
-    
-    if not REPORT_CHAT_ID:
-        await message.reply("⚠️ Функция репортов не настроена администратором.")
-        return
-    
-    reported_user = message.reply_to_message.from_user
-    reporter = message.from_user
-    reason = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else "Не указана"
-    
-    report_text = f"""
-🚨 <b>Новый репорт</b> 🚨
-Чат: {message.chat.title} (ID: {message.chat.id})
-Жалоба на: {reported_user.full_name} (@{reported_user.username}, ID: {reported_user.id})
-От: {reporter.full_name} (@{reporter.username}, ID: {reporter.id})
-Причина: {reason}
-"""
-    try:
-        await bot.send_message(REPORT_CHAT_ID, report_text)
-        await message.reply("✅ Ваша жалоба отправлена администраторам.")
-    except Exception as e:
-        logger.error(f"Ошибка при отправке репорта: {e}")
-        await message.reply("⚠️ Не удалось отправить жалобу. Попробуйте позже.")
-
-# ========== ФУНКЦИИ ВАРНОВ ========== #
-
-@dp.message(Command("warn"), F.reply_to_message)
-async def warn_user(message: Message):
-    if not await check_admin(message):
-        return
-    
-    warned_user = message.reply_to_message.from_user
-    reason = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else "Не указана"
-    
-    with sqlite3.connect('bot_db.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO warns (chat_id, user_id, admin_id, reason) VALUES (?, ?, ?, ?)",
-            (message.chat.id, warned_user.id, message.from_user.id, reason)
-        )
-        conn.commit()
-    
-    warn_count = get_warn_count(message.chat.id, warned_user.id)
-    await message.reply(
-        f"⚠️ Пользователю {warned_user.full_name} выдано предупреждение.\n"
-        f"Всего предупреждений: {warn_count}\n"
-        f"Причина: {reason}"
-    )
-
-@dp.message(Command("unwarn"), F.reply_to_message)
-async def unwarn_user(message: Message):
-    if not await check_admin(message):
-        return
-    
-    warned_user = message.reply_to_message.from_user
-    
-    with sqlite3.connect('bot_db.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "DELETE FROM warns WHERE chat_id = ? AND user_id = ? ORDER BY created_at DESC LIMIT 1",
-            (message.chat.id, warned_user.id)
-        )
-        conn.commit()
-    
-    await message.reply(f"✅ Снято одно предупреждение с пользователя {warned_user.full_name}")
-
-@dp.message(Command("warns"))
-async def show_warns(message: Message):
-    user = message.reply_to_message.from_user if message.reply_to_message else message.from_user
-    warn_count = get_warn_count(message.chat.id, user.id)
-    
-    await message.reply(
-        f"ℹ️ Пользователь {user.full_name} имеет {warn_count} предупреждений."
-    )
-
-def get_warn_count(chat_id, user_id):
-    with sqlite3.connect('bot_db.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT COUNT(*) FROM warns WHERE chat_id = ? AND user_id = ?",
-            (chat_id, user_id)
-        )
-        return cursor.fetchone()[0]
-
-# ========== ФУНКЦИИ СОЗЫВА ========== #
-
-@dp.message(Command("call_all"))
-async def call_all(message: Message):
-    if not await check_admin(message):
-        return
-    
-    try:
-        chat_members_count = await bot.get_chat_members_count(message.chat.id)
-        await message.reply(f"📢 @all Внимание! Созыв всех участников! (Всего: {chat_members_count})")
-    except Exception as e:
-        logger.error(f"Ошибка при созыве всех: {e}")
-        await message.reply("⚠️ Не удалось выполнить созыв всех участников.")
-
-@dp.message(Command("call"))
-async def call_user(message: Message):
-    if not await check_admin(message):
-        return
-    
-    if len(message.text.split()) < 2:
-        await message.reply("ℹ️ Укажите username пользователя после команды, например: /call @username")
-        return
-    
-    username = message.text.split()[1].lstrip('@')
-    await message.reply(f"📢 @{username}, вас вызывают!")
-
-# ========== АДМИН КОМАНДЫ ========== #
-
-@dp.message(Command("set_welcome"))
-async def set_welcome(message: Message):
-    if not await check_admin(message):
-        return
-    
-    welcome_text = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
-    
-    if not welcome_text:
-        await message.reply("ℹ️ Используйте: /set_welcome [текст]\n"
-                          "Доступные переменные: {name} - имя пользователя, {chat} - название чата")
-        return
-    
-    with sqlite3.connect('bot_db.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO chats (chat_id, welcome_text) VALUES (?, ?)",
-            (message.chat.id, welcome_text)
-        )
-        conn.commit()
-    
-    await message.reply("✅ Приветственное сообщение установлено!")
-
-@dp.message(Command("set_rules"))
-async def set_rules(message: Message):
-    if not await check_admin(message):
-        return
-    
-    rules_text = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else None
-    
-    if not rules_text:
-        await message.reply("ℹ️ Используйте: /set_rules [текст правил]")
-        return
-    
-    with sqlite3.connect('bot_db.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT OR REPLACE INTO chats (chat_id, rules_text) VALUES (?, ?)",
-            (message.chat.id, rules_text)
-        )
-        conn.commit()
-    
-    await message.reply("✅ Правила чата установлены!")
-
-@dp.message(Command("rules"))
-async def show_rules(message: Message):
-    with sqlite3.connect('bot_db.db') as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT rules_text FROM chats WHERE chat_id = ?",
-            (message.chat.id,)
-        )
-        result = cursor.fetchone()
-        rules_text = result[0] if result else "Правила чата не установлены."
-    
-    await message.reply(f"📜 Правила чата:\n\n{rules_text}")
+# 3. Создание бота и диспетчера
+bot = Bot(
+    token=BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
+dp = Dispatcher()  # Вот где создается dp!
 
 
 # ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ========== #
 
 async def check_admin(message: Message) -> bool:
-    """Проверяет, является ли пользователь администратором"""
+    """Проверяет, является ли пользователь администратором чата"""
     try:
-        member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        if member.status in ['administrator', 'creator']:
-            return True
-        
-        await message.reply("⚠️ Эта команда доступна только администраторам чата.")
-        return False
+        member = await bot.get_chat_member(
+            chat_id=message.chat.id,
+            user_id=message.from_user.id
+        )
+        return member.status in ['administrator', 'creator']
     except Exception as e:
-        logger.error(f"Ошибка проверки админки: {e}")
+        logger.error(f"Ошибка проверки прав администратора: {e}")
         return False
+
+async def get_warn_count(user_id: int, chat_id: int) -> int:
+    """Получает количество предупреждений пользователя"""
+    with sqlite3.connect('bot_db.db') as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT count FROM warns WHERE user_id = ? AND chat_id = ?",
+            (user_id, chat_id)
+        )
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+async def add_warn(user_id: int, chat_id: int) -> int:
+    """Добавляет предупреждение пользователю"""
+    with sqlite3.connect('bot_db.db') as conn:
+        cursor = conn.cursor()
+        current = await get_warn_count(user_id, chat_id)
+        if current == 0:
+            cursor.execute(
+                "INSERT INTO warns (user_id, chat_id, count) VALUES (?, ?, 1)",
+                (user_id, chat_id)
+            )
+        else:
+            cursor.execute(
+                "UPDATE warns SET count = count + 1 WHERE user_id = ? AND chat_id = ?",
+                (user_id, chat_id)
+            )
+        conn.commit()
+        return current + 1
+
+# ========== КОМАНДЫ БОТА ========== #
+
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.answer("Привет! Я бот. Используй /help для списка команд")
+
+@dp.message(Command("help"))
+async def cmd_help(message: Message):
+    help_text = """
+📋 Основные команды:
+
+Для всех:
+/help - Справка по командам
+/report [причина] - Пожаловаться на пользователя (ответом на сообщение)
+/call @username - Созвать конкретного пользователя
+
+Для админов:
+/call_all - Созвать всех участников
+"""
+    await message.answer(help_text)
+
+@dp.message(F.new_chat_members)
+async def welcome_new_members(message: Message):
+    for new_member in message.new_chat_members:
+        if new_member.id == bot.id:
+            await message.answer("Спасибо за добавление! Дайте мне права администратора.")
+            continue
+        
+        with sqlite3.connect('bot_db.db') as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT welcome_text FROM chats WHERE chat_id = ?",
+                (message.chat.id,)
+            )
+            welcome_text = cursor.fetchone()[0] if cursor.fetchone() else 'Добро пожаловать, {name}!'
+        
+        await message.answer(
+            welcome_text.format(name=new_member.full_name, chat=message.chat.title)
+        )
+
+# ========== СИСТЕМА ПРИЗЫВОВ ========== #
+
+@dp.message(Command("call_all"))
+async def call_all(message: Message):
+    if not await check_admin(message):
+        return await message.answer("⚠️ Эта команда доступна только администраторам!")
     
+    try:
+        count = await bot.get_chat_member_count(message.chat.id)
+        await message.answer(f"📢 @all Внимание! Всего участников: {count}")
+    except Exception as e:
+        logger.error(f"Ошибка при созыве всех: {e}")
+        await message.answer("⚠️ Не удалось выполнить созыв.")
 
+@dp.message(Command("call"))
+async def call_user(message: Message):
+    
+    if len(message.text.split()) < 2:
+        return await message.answer("ℹ️ Укажите username пользователя, например: /call @username")
+    
+    username = message.text.split()[1].lstrip('@')
+    await message.answer(f"📢 @{username}, вас вызывают!")
 
-if __name__ == '__main__':
-    from aiogram import executor 
-    executor.start_polling(dp, skip_updates=True)
+# ========== СИСТЕМА РЕПОРТОВ ========== #
+
+@dp.message(Command("report"))
+async def report_user(message: Message):
+    if not message.reply_to_message:
+        return await message.answer("ℹ️ Ответьте на сообщение для жалобы!")
+    
+    if not ADMIN_CHAT_ID:
+        return await message.answer("⚠️ Чат для жалоб не настроен.")
+    
+    reported = message.reply_to_message.from_user
+    reason = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else "Не указана"
+    
+    report_text = (
+        f"🚨 Жалоба от {message.from_user.mention_html()}\n"
+        f"👤 На: {reported.mention_html()} (ID: {reported.id})\n"
+        f"📝 Причина: {reason}\n"
+        f"💬 Чат: {message.chat.title}"
+    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="⚠️ Выдать варн", callback_data=f"warn_{reported.id}"),
+            InlineKeyboardButton(text="🛑 Забанить", callback_data=f"ban_{reported.id}")
+        ],
+        [InlineKeyboardButton(text="❌ Отклонить", callback_data="dismiss")]
+    ])
+    
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_CHAT_ID,
+            text=report_text,
+            reply_markup=kb,
+            parse_mode=ParseMode.HTML
+        )
+        await message.answer("✅ Ваша жалоба отправлена!")
+    except Exception as e:
+        logger.error(f"Ошибка отправки жалобы: {e}")
+        await message.answer("❌ Не удалось отправить жалобу")
+
+# ========== ОБРАБОТКА КНОПОК ========== #
+
+@dp.callback_query(F.data.startswith("warn_"))
+async def process_warn(callback: types.CallbackQuery):
+    user_id = int(callback.data.split("_")[1])
+    chat_id = callback.message.chat.id
+    
+    warn_count = await add_warn(user_id, chat_id)
+    
+    if warn_count >= MAX_WARNS:
+        try:
+            await bot.ban_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                until_date=datetime.now() + BAN_DURATION
+            )
+            text = f"🚷 Пользователь {user_id} забанен (3/3 варнов)"
+        except Exception as e:
+            text = f"⚠️ Ошибка бана: {e}"
+    else:
+        text = f"⚠️ Пользователь {user_id} получил предупреждение ({warn_count}/{MAX_WARNS})"
+    
+    await callback.message.edit_text(text, reply_markup=None)
+    await callback.answer()
+
+# ========== ЗАПУСК БОТА ========== #
+
+async def main():
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
